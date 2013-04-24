@@ -36,6 +36,8 @@ import org.mvel2.ParserContext;
 import org.mvel2.compiler.ExecutableStatement;
 import org.mvel2.integration.impl.MapVariableResolverFactory;
 
+import com.google.common.collect.ImmutableList;
+
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.HashMap;
@@ -45,22 +47,50 @@ import java.util.Map;
  *
  */
 public class MvelScriptEngineService extends AbstractComponent implements ScriptEngineService {
+    public static final String SCRIPTING_MVEL_STATICS = "scripting.mvel.statics";
+    public static final String SCRIPTING_MVEL_PACKAGES = "scripting.mvel.packages";
 
-    private final ParserConfiguration parserConfiguration;
+    protected final ParserConfiguration parserConfiguration;
 
     @Inject
     public MvelScriptEngineService(Settings settings) {
         super(settings);
 
         parserConfiguration = new ParserConfiguration();
+        setupMvelImports();
+    }
+
+    protected void setupMvelImports() {
+        // Makes all classes in a package available without namespacing,
+        // i.e. one can refer to java.util.ArrayList as ArrayList.
         parserConfiguration.addPackageImport("java.util");
         parserConfiguration.addPackageImport("gnu.trove");
         parserConfiguration.addPackageImport("org.joda");
-        parserConfiguration.addImport("time", MVEL.getStaticMethod(System.class, "currentTimeMillis", new Class[0]));
-        // unboxed version of Math, better performance since conversion from boxed to unboxed my mvel is not needed
-        for (Method m : UnboxedMathUtils.class.getMethods()) {
-            if ((m.getModifiers() & Modifier.STATIC) > 0) {
-                parserConfiguration.addImport(m.getName(), m);
+        for (String packageName : settings.getAsArray(SCRIPTING_MVEL_PACKAGES)) {
+            parserConfiguration.addPackageImport(packageName);
+        }
+
+        parserConfiguration.addImport("time", MVEL.getStaticMethod(
+                System.class, "currentTimeMillis", new Class[0]));
+
+        // Add static methods in specified classes, so one can call e.g.
+        // sin() instead of UnboxedMathUtils.sin().
+        ImmutableList.Builder<Class<?>> staticImports = new ImmutableList.Builder<Class<?>>();
+        // unboxed version of Math, better performance since conversion from
+        // boxed to unboxed my mvel is not needed
+        staticImports = staticImports.add(UnboxedMathUtils.class);
+        for (String className : settings.getAsArray(SCRIPTING_MVEL_STATICS)) {
+            try {
+                staticImports = staticImports.add(Class.forName(className));
+            } catch (ClassNotFoundException e) {
+                logger.error("Couldn't load class " + className);
+            }
+        }
+        for (Class<?> cls : staticImports.build()) {
+            for (Method m : cls.getMethods()) {
+                if ((m.getModifiers() & Modifier.STATIC) > 0) {
+                    parserConfiguration.addImport(m.getName(), m);
+                }
             }
         }
     }
